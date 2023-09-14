@@ -18,6 +18,9 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "stm32f1xx.h"
+#include <stdio.h>
+#include <stdbool.h>
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -42,6 +45,8 @@
 /* Private variables ---------------------------------------------------------*/
 CAN_HandleTypeDef hcan;
 
+I2C_HandleTypeDef hi2c1;
+
 UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
@@ -53,6 +58,9 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_CAN_Init(void);
 static void MX_USART3_UART_Init(void);
+static void MX_I2C1_Init(void);
+static void updateLightState(uint8_t);
+static void sendLightState(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -61,6 +69,7 @@ static void MX_USART3_UART_Init(void);
 /* USER CODE BEGIN 0 */
 
 CAN_TxHeaderTypeDef TxHeader;
+CAN_TxHeaderTypeDef TxIVIHeader;
 CAN_RxHeaderTypeDef RxHeader;
 
 uint8_t TxData[8];
@@ -68,14 +77,18 @@ uint8_t RxData[8];
 
 uint32_t TxMailbox;
 
-int datacheck = 0;
+bool lightsStatus = false;
 
 void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan) {
-	char TagLightSensor[30] = { "Master Callback fifo1....\n\r" };
-	HAL_UART_Transmit(&huart3, (uint8_t*) &TagLightSensor, 30, 30);
+	char TagCanCallback[30] = { "Master Callback fifo1....\n\r" };
+	HAL_UART_Transmit(&huart3, (uint8_t*) &TagCanCallback, 30, 30);
 	HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &RxHeader, RxData);
-	if (RxHeader.DLC == 2) {
-		datacheck = 1;
+	char TagCanResult[35];
+	sprintf(TagCanResult, "Callback data %ld, %ld, %d\n\r", RxHeader.DLC,
+			RxHeader.StdId, RxData[0]);
+	HAL_UART_Transmit(&huart3, (uint8_t*) &TagCanResult, 35, 35);
+	if (RxHeader.DLC == 2 && RxHeader.StdId == 259) {
+		lightsStatus = true;
 	}
 }
 
@@ -110,6 +123,7 @@ int main(void) {
 	MX_GPIO_Init();
 	MX_CAN_Init();
 	MX_USART3_UART_Init();
+	MX_I2C1_Init();
 	/* USER CODE BEGIN 2 */
 	HAL_CAN_Start(&hcan);
 
@@ -123,6 +137,49 @@ int main(void) {
 
 	TxData[0] = 200;   // ms Delay
 	TxData[1] = 40;    // loop rep
+
+	TxIVIHeader.DLC = 2;
+	TxIVIHeader.IDE = CAN_ID_STD;
+	TxIVIHeader.RTR = CAN_RTR_DATA;
+	TxIVIHeader.StdId = 0x242;
+	TxIVIHeader.TransmitGlobalTime = 1;
+
+	uint8_t sensorAddress = 0x23 << 1;
+	uint8_t buffer = 0x01;
+
+	// Power On
+	char *TagLightSensor = { '\0' };
+	if (HAL_I2C_Master_Transmit(&hi2c1, sensorAddress, &buffer, 1, 100)
+			!= HAL_OK) {
+		TagLightSensor = "Light sensor power ON failed\n\r";
+		HAL_UART_Transmit(&huart3, (uint8_t*) TagLightSensor, 33, 33);
+	}
+
+	HAL_Delay(5);
+
+	if (HAL_I2C_GetState(&hi2c1) != HAL_I2C_STATE_READY) {
+		TagLightSensor = "Light sensor get state failed\n\r";
+		HAL_UART_Transmit(&huart3, (uint8_t*) TagLightSensor, 33, 33);
+	}
+
+	// Reset Illuminance Register
+	buffer = 0x03;
+	if (HAL_I2C_Master_Transmit(&hi2c1, sensorAddress, &buffer, 1, 100)
+			!= HAL_OK) {
+		TagLightSensor = "Light sensor reset failed\n\r";
+		HAL_UART_Transmit(&huart3, (uint8_t*) TagLightSensor, 29, 29);
+	}
+
+	// Set measurement mode
+	buffer = 0x10;
+	if (HAL_I2C_Master_Transmit(&hi2c1, sensorAddress, &buffer, 1, 100)
+			!= HAL_OK) {
+		TagLightSensor = "Light sensor read failed\n\r";
+		HAL_UART_Transmit(&huart3, (uint8_t*) TagLightSensor, 28, 28);
+	}
+
+	HAL_Delay(180); // Wait for measurement (or come back after 180 ms instead of idling)
+
 	/* USER CODE END 2 */
 
 	/* Infinite loop */
@@ -130,32 +187,98 @@ int main(void) {
 
 	while (1) {
 		/* USER CODE END WHILE */
-
-		if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_6) == GPIO_PIN_SET) { //Check if head light button pressed
+		if (HAL_GPIO_ReadPin(GPIOA, BTN_CAN_Pin) == GPIO_PIN_SET) { //Check if CAN button pressed
 			char TagCan[35] = { "Master trigger from switch....\n\r" };
-			HAL_UART_Transmit(&huart3, (uint8_t*) &TagCan, 35, 35);
-			HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox);
-
-		}
-		if (datacheck) {
-			// blink the LED
-			for (int i = 0; i < RxData[1]; i++) {
-				HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-				HAL_Delay(RxData[0]);
-			}
-
-			datacheck = 0;
-
 			TxData[0] = 200;   // ms Delay
 			TxData[1] = 40;    // loop rep
-
-			char TagCan[25] = { "Master trigger....\n\r" };
-			HAL_UART_Transmit(&huart3, (uint8_t*) &TagCan, 25, 25);
-
+			HAL_UART_Transmit(&huart3, (uint8_t*) &TagCan, 35, 35);
 			HAL_CAN_AddTxMessage(&hcan, &TxHeader, TxData, &TxMailbox);
-
 		}
-		HAL_Delay(1000);
+
+		if (lightsStatus) {
+			if (RxData[0] == 4)
+				sendLightState();
+			else
+				updateLightState(RxData[0]);
+
+			lightsStatus = false;
+		}
+
+		if (HAL_GPIO_ReadPin(GPIOB, BTN_HEAD_LIGHT_Pin) == GPIO_PIN_SET) { //Check if head light button pressed
+			char *TagBtnHeadLight = { "Head light Switch pressed\n\r" };
+			HAL_UART_Transmit(&huart3, (uint8_t*) TagBtnHeadLight, 29, 29);
+			TxData[0] = 1;
+			if (HAL_GPIO_ReadPin(GPIOA, HEAD_LIGHT_Pin) == GPIO_PIN_SET) {
+				TxData[1] = 0;
+				HAL_GPIO_WritePin(GPIOA, HEAD_LIGHT_Pin, GPIO_PIN_RESET); //HEAD LIGHT OFF
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			} else {
+				TxData[1] = 1;
+				HAL_GPIO_WritePin(GPIOA, HEAD_LIGHT_Pin, GPIO_PIN_SET); // HEAD LIGHT ON
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			}
+		}
+
+		if (HAL_GPIO_ReadPin(GPIOB, BTN_LEFT_INDICATOR_Pin) == GPIO_PIN_SET) { //Check if left indicator button pressed
+			char *TagBtnLeftIndicator = { "Left Indicator Switch pressed\n\r" };
+			HAL_UART_Transmit(&huart3, (uint8_t*) TagBtnLeftIndicator, 35, 35);
+			TxData[0] = 2;
+			if (HAL_GPIO_ReadPin(GPIOA, LEFT_INDICATOR_Pin) == GPIO_PIN_SET) {
+				TxData[1] = 0;
+				HAL_GPIO_WritePin(GPIOA, LEFT_INDICATOR_Pin, GPIO_PIN_RESET); //LEFT INDICATOR OFF
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			} else {
+				TxData[1] = 1;
+				HAL_GPIO_WritePin(GPIOA, LEFT_INDICATOR_Pin, GPIO_PIN_SET); // LEFT INDICATOR ON
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			}
+		}
+
+		if (HAL_GPIO_ReadPin(BTN_RIGHT_INDICATOR_GPIO_Port,
+		BTN_RIGHT_INDICATOR_Pin) == GPIO_PIN_SET) { //Check if right indicator button pressed
+			char *TagBtnRighttIndic = { "Right Indicator Switch pressed\n\r" };
+			HAL_UART_Transmit(&huart3, (uint8_t*) TagBtnRighttIndic, 35, 35);
+			TxData[0] = 3;
+			if (HAL_GPIO_ReadPin(GPIOA, RIGHT_INDICATOR_Pin) == GPIO_PIN_SET) {
+				TxData[1] = 0;
+				HAL_GPIO_WritePin(GPIOA, RIGHT_INDICATOR_Pin, GPIO_PIN_RESET); //RIGHT INDICATOR OFF
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			} else {
+				TxData[1] = 1;
+				HAL_GPIO_WritePin(GPIOA, RIGHT_INDICATOR_Pin, GPIO_PIN_SET); // RIGHT INDICATOR ON
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+			}
+		}
+
+		uint8_t data[3];
+		if (HAL_I2C_Master_Receive(&hi2c1, sensorAddress, data, 3, 100)
+				!= HAL_OK) {
+			//char TagLightSensor[35];
+			//sprintf(TagLightSensor, "Data failed %d, %d, %d\n\r", data[0], data[1], data[2]);
+			//HAL_UART_Transmit(&huart3, (uint8_t*) &TagLightSensor, 35, 35);
+		} else {
+			//char TagLightSensor[35];
+			//sprintf(TagLightSensor, "Sensor value %d, %d, %d\n\r", data[0], data[1], data[2]);
+			//HAL_UART_Transmit(&huart3, (uint8_t*) &TagLightSensor, 35, 35);
+			TxData[0] = 1;
+			if (HAL_GPIO_ReadPin(GPIOA, HEAD_LIGHT_Pin) == GPIO_PIN_RESET
+					&& data[1] < 50) {
+				TxData[1] = 1;
+				HAL_GPIO_WritePin(GPIOA, HEAD_LIGHT_Pin, GPIO_PIN_SET); // HEAD LIGHT ON
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+				char *hLightTag = { "Low light, turning ON head light\n\r" };
+				HAL_UART_Transmit(&huart3, (uint8_t*) hLightTag, 36, 36);
+			} else if (HAL_GPIO_ReadPin(GPIOA, HEAD_LIGHT_Pin) == GPIO_PIN_SET
+					&& data[1] > 50) {
+				TxData[1] = 0;
+				HAL_GPIO_WritePin(GPIOA, HEAD_LIGHT_Pin, GPIO_PIN_RESET); // HEAD LIGHT OFF
+				HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+				char *hLightTag = { "Normal light, turning OFF head light\n\r" };
+				HAL_UART_Transmit(&huart3, (uint8_t*) hLightTag, 40, 40);
+			}
+		}
+
+		HAL_Delay(500);
 		/* USER CODE BEGIN 3 */
 	}
 	/* USER CODE END 3 */
@@ -247,6 +370,38 @@ static void MX_CAN_Init(void) {
 }
 
 /**
+ * @brief I2C1 Initialization Function
+ * @param None
+ * @retval None
+ */
+static void MX_I2C1_Init(void) {
+
+	/* USER CODE BEGIN I2C1_Init 0 */
+
+	/* USER CODE END I2C1_Init 0 */
+
+	/* USER CODE BEGIN I2C1_Init 1 */
+
+	/* USER CODE END I2C1_Init 1 */
+	hi2c1.Instance = I2C1;
+	hi2c1.Init.ClockSpeed = 100000;
+	hi2c1.Init.DutyCycle = I2C_DUTYCYCLE_2;
+	hi2c1.Init.OwnAddress1 = 70;
+	hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+	hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+	hi2c1.Init.OwnAddress2 = 0;
+	hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+	hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+	if (HAL_I2C_Init(&hi2c1) != HAL_OK) {
+		Error_Handler();
+	}
+	/* USER CODE BEGIN I2C1_Init 2 */
+
+	/* USER CODE END I2C1_Init 2 */
+
+}
+
+/**
  * @brief USART3 Initialization Function
  * @param None
  * @retval None
@@ -296,6 +451,10 @@ static void MX_GPIO_Init(void) {
 	/*Configure GPIO pin Output Level */
 	HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
 
+	/*Configure GPIO pin Output Level */
+	HAL_GPIO_WritePin(GPIOA,
+	RIGHT_INDICATOR_Pin | LEFT_INDICATOR_Pin | HEAD_LIGHT_Pin, GPIO_PIN_RESET);
+
 	/*Configure GPIO pin : PC13 */
 	GPIO_InitStruct.Pin = GPIO_PIN_13;
 	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -303,17 +462,72 @@ static void MX_GPIO_Init(void) {
 	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
 	HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-	/*Configure GPIO pin : PA6 */
-	GPIO_InitStruct.Pin = GPIO_PIN_6;
+	/*Configure GPIO pins : BTN_CAN_Pin BTN_RIGHT_INDICATOR_Pin */
+	GPIO_InitStruct.Pin = BTN_CAN_Pin | BTN_RIGHT_INDICATOR_Pin;
 	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
 	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
 	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	/*Configure GPIO pins : RIGHT_INDICATOR_Pin LEFT_INDICATOR_Pin HEAD_LIGHT_Pin */
+	GPIO_InitStruct.Pin = RIGHT_INDICATOR_Pin | LEFT_INDICATOR_Pin
+			| HEAD_LIGHT_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+	GPIO_InitStruct.Pull = GPIO_NOPULL;
+	GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+	HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+	/*Configure GPIO pins : BTN_LEFT_INDICATOR_Pin BTN_HEAD_LIGHT_Pin */
+	GPIO_InitStruct.Pin = BTN_LEFT_INDICATOR_Pin | BTN_HEAD_LIGHT_Pin;
+	GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+	GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+	HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 	/* USER CODE BEGIN MX_GPIO_Init_2 */
 	/* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+
+static void updateLightState(uint8_t light) {
+	GPIO_PinState state = RxData[1] == 0 ? GPIO_PIN_RESET : GPIO_PIN_SET;
+	if (light == 1)
+		HAL_GPIO_WritePin(GPIOA, HEAD_LIGHT_Pin, state); //HEAD LIGHT
+	else if (light == 2)
+		HAL_GPIO_WritePin(GPIOA, LEFT_INDICATOR_Pin, state); //LEFT INDICATOR
+	else if (light == 3)
+		HAL_GPIO_WritePin(GPIOA, RIGHT_INDICATOR_Pin, state); //RIGHT INDICATOR
+
+}
+
+static void sendLightState(void) {
+	TxData[0] = 1;
+	if (HAL_GPIO_ReadPin(GPIOA, HEAD_LIGHT_Pin) == GPIO_PIN_RESET) {
+		TxData[1] = 0;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	} else {
+		TxData[1] = 1;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	}
+	HAL_Delay(50);
+	TxData[0] = 2;
+	if (HAL_GPIO_ReadPin(GPIOA, LEFT_INDICATOR_Pin) == GPIO_PIN_RESET) {
+		TxData[1] = 0;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	} else {
+		TxData[1] = 1;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	}
+	HAL_Delay(50);
+	TxData[0] = 3;
+	if (HAL_GPIO_ReadPin(GPIOA, RIGHT_INDICATOR_Pin) == GPIO_PIN_RESET) {
+		TxData[1] = 0;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	} else {
+		TxData[1] = 1;
+		HAL_CAN_AddTxMessage(&hcan, &TxIVIHeader, TxData, &TxMailbox);
+	}
+	HAL_Delay(50);
+}
 
 /* USER CODE END 4 */
 

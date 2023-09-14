@@ -28,6 +28,7 @@ extern "C" {
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32f1xx_hal.h"
+#include "stm32f1xx.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
@@ -57,6 +58,20 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define BTN_CAN_Pin GPIO_PIN_3
+#define BTN_CAN_GPIO_Port GPIOA
+#define RIGHT_INDICATOR_Pin GPIO_PIN_4
+#define RIGHT_INDICATOR_GPIO_Port GPIOA
+#define LEFT_INDICATOR_Pin GPIO_PIN_5
+#define LEFT_INDICATOR_GPIO_Port GPIOA
+#define HEAD_LIGHT_Pin GPIO_PIN_6
+#define HEAD_LIGHT_GPIO_Port GPIOA
+#define BTN_RIGHT_INDICATOR_Pin GPIO_PIN_7
+#define BTN_RIGHT_INDICATOR_GPIO_Port GPIOA
+#define BTN_LEFT_INDICATOR_Pin GPIO_PIN_0
+#define BTN_LEFT_INDICATOR_GPIO_Port GPIOB
+#define BTN_HEAD_LIGHT_Pin GPIO_PIN_1
+#define BTN_HEAD_LIGHT_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 
